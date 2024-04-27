@@ -223,5 +223,13 @@ def read_appointment_by_customer_id(customer_id=None):
     return data
 
 
+def delete_appointment_by_customer(customer_id):
+    conn = sqlite3.connect(database_path)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM Appointment WHERE customer_id = ?", (customer_id,))
+    conn.commit()
+    conn.close()
+
+
 if __name__ == '__main__':
     print(read_service())

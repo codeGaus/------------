@@ -3,6 +3,9 @@ import telebot
 import sqlite3
 import redis
 import crud
+import re
+from datetime import datetime
+
 from tokens import API_TOKEN
 
 
@@ -16,6 +19,19 @@ database_path = f"databases/{database_name}"
 
 # Словарь для хранения состояний пользователей
 users_state = {}
+
+
+def check_date_format(date_string):
+    try:
+        datetime.strptime(date_string, '%Y-%m-%d')
+        return True
+    except ValueError:
+        return False
+
+
+def check_time_format(time_string):
+    pattern = re.compile(r'^([01]?[0-9]|2[0-3])-[0-5][0-9]$')
+    return bool(pattern.match(time_string))
 
 
 # Регистрация
@@ -44,7 +60,7 @@ def registration(message, type):
         conn.commit()
         conn.close()
 
-        text = "Отлично, введите ваш номер телефона:"
+        text = "Отлично, введите ваш номер телефона в формате +79991112233:"
 
     elif type == 'phone':
         chat_id = message.chat.id
@@ -63,14 +79,17 @@ def registration(message, type):
         tg_id = message.from_user.id
         birthdate = message.text
 
-        conn = sqlite3.connect(database_path)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE Customer SET birthdate = ? WHERE tg_id = ?", (birthdate, tg_id))
-        conn.commit()
-        conn.close()
-        conn.close()
+        if not check_date_format(birthdate):
+            text = "Вы ввели неверную дату! Введите вашу дату рождения в формате ГГГГ-ММ-ДД (например, 1990-01-01):"
+        else:
+            conn = sqlite3.connect(database_path)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE Customer SET birthdate = ? WHERE tg_id = ?", (birthdate, tg_id))
+            conn.commit()
+            conn.close()
+            conn.close()
 
-        text = "Регистрация завершена. Спасибо! \nМожете посмотреть список наших услуг /services и акций /promotions"
+            text = "Регистрация завершена. Спасибо! \nМожете посмотреть список наших услуг /services и акций /promotions"
 
     return text
 
@@ -148,52 +167,59 @@ def appointment(message, type, service_id=None):
         tg_id = message.from_user.id
         appointment_date = message.text
 
-        conn = sqlite3.connect(database_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            UPDATE Appointment
-            SET appointment_date = ?
-            WHERE
-                1 = 1
-                and customer_id = {int(tg_id)}
-                and appointment_id = (
-                    SELECT MAX(appointment_id)
-                    FROM Appointment
-                    WHERE customer_id = {int(tg_id)}
-                )
-            """,
-            (appointment_date,))
-        conn.commit()
-        conn.close()
+        if not check_date_format(appointment_date):
+            text = "Вы ввели неверную дату! Введите дату для записи в формате ГГГГ-ММ-ДД (например, 1990-01-01):"
+        else:
 
-        text = "Введите время для записи в формате ЧАСЫ-МИНУТЫ (например, 22-30):"
+            conn = sqlite3.connect(database_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE Appointment
+                SET appointment_date = ?
+                WHERE
+                    1 = 1
+                    and customer_id = {int(tg_id)}
+                    and appointment_id = (
+                        SELECT MAX(appointment_id)
+                        FROM Appointment
+                        WHERE customer_id = {int(tg_id)}
+                    )
+                """,
+                (appointment_date,))
+            conn.commit()
+            conn.close()
+
+            text = "Введите время для записи в формате ЧАСЫ-МИНУТЫ (например, 22-30):"
 
     elif type == 'appointment_time':
         chat_id = message.chat.id
         tg_id = message.from_user.id
         appointment_time = message.text
 
-        conn = sqlite3.connect(database_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            UPDATE Appointment
-            SET appointment_time = ?
-            WHERE
-                1 = 1
-                and customer_id = {int(tg_id)}
-                and appointment_id = (
-                    SELECT MAX(appointment_id)
-                    FROM Appointment
-                    WHERE customer_id = {int(tg_id)}
-                )
-            """,
-            (appointment_time,))
-        conn.commit()
-        conn.close()
+        if not check_time_format(appointment_time):
+            text = 'Вы ввели неверное время! Введите время для записи в формате ЧАСЫ-МИНУТЫ (например, 22-30):'
+        else:
+            conn = sqlite3.connect(database_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE Appointment
+                SET appointment_time = ?
+                WHERE
+                    1 = 1
+                    and customer_id = {int(tg_id)}
+                    and appointment_id = (
+                        SELECT MAX(appointment_id)
+                        FROM Appointment
+                        WHERE customer_id = {int(tg_id)}
+                    )
+                """,
+                (appointment_time,))
+            conn.commit()
+            conn.close()
 
-        text = "Вы записаны на услугу!"
+            text = "Вы записаны на услугу!"
 
     return text, buttons
 
@@ -217,7 +243,7 @@ def handle_services(message):
     bot.reply_to(message, services)
 
 
-# Команда для просмотра скидок
+# Команда для просмотра акций
 @bot.message_handler(commands=['promotions'])
 def handle_promotion(message):
     # Используйте Redis для кэширования данных о услугах
@@ -232,6 +258,32 @@ def handle_promotion(message):
         print(promotions)
         redis_client.set('promotions', promotions)
     bot.reply_to(message, promotions)
+
+
+# Команда для просмотра скидок
+@bot.message_handler(commands=['discounts'])
+def handle_discount(message):
+    # Используйте Redis для кэширования данных о услугах
+    discounts = redis_client.get('discounts')
+    if not discounts:
+        # Загрузка данных из базы данных, если кэш пуст
+
+        conn = sqlite3.connect(database_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT service_name, discount_percentage, price  FROM Discount LEFT JOIN Service ON Discount.service_id = Service.service_id")
+        data = cursor.fetchall()
+        conn.close()
+
+        text = 'Скидки'
+        for dis in data:
+            service_name = dis[0]
+            price = dis[2]
+            discount = dis[1]
+            text += f'\n\n🔥 {service_name} \nCтоимость: {price} руб. \nСкидка: {discount}%'
+        discounts = text
+        print(discounts)
+        redis_client.set('discounts', discounts)
+    bot.reply_to(message, discounts)
 
 
 # Команда для просмотра своих записей
@@ -309,6 +361,7 @@ def delete_me(message):
 
     if customer:
         crud.delete_customer(customer[0])
+        crud.delete_appointment_by_customer(tg_id)
     bot.send_message(chat_id, "Данные о Вас удалены. Нажмите /start, чтобы начать регистрацию")
 
 
@@ -363,8 +416,12 @@ def handle_message(message):
         bot.send_message(chat_id, text)
     elif state == 'birthday':
         text = registration(message, state)
-        users_state[chat_id] = 'CLEAR'
-        bot.send_message(chat_id, text)
+        if "неверную" in text:
+            users_state[chat_id] = 'birthday'
+            bot.send_message(chat_id, text)
+        else:
+            users_state[chat_id] = 'CLEAR'
+            bot.send_message(chat_id, text)
     elif state == 'appointment_service':
         print('APPOINTMENT SERVICE STATE')
         text, buttons = appointment(message, state)
@@ -384,15 +441,21 @@ def handle_message(message):
     elif state == 'appointment_date':
         print('APPOINTMENT DATE STATE')
         text, buttons = appointment(message, state)
-
-        users_state[chat_id] = 'appointment_time'
-        bot.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove())
+        if "неверную дату" in text:
+            users_state[chat_id] = 'appointment_date'
+            bot.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove())
+        else:
+            users_state[chat_id] = 'appointment_time'
+            bot.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove())
     elif state == 'appointment_time':
         print('APPOINTMENT TIME STATE')
         text, buttons = appointment(message, state)
-
-        users_state[chat_id] = 'CLEAR'
-        bot.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove())
+        if "неверное время" in text:
+            users_state[chat_id] = 'appointment_time'
+            bot.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove())
+        else:
+            users_state[chat_id] = 'CLEAR'
+            bot.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove())
     else:
         bot.send_message(chat_id, 'Ошибка, нажмите /start')
 
